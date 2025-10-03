@@ -1,71 +1,199 @@
-from z3 import Int, Solver
+from z3 import *
 import random
+from deap import base, creator, tools, gp, algorithms
+import operator
+import math
 
-# -------------------------
-# Configuration
-# -------------------------
-NUM_VARS = 3  # number of integer variables
+# # Configuration
+NUM_VARS = 5  # number of integer variables
 NUM_ASSERTS = 2  # number of assertions
-MAX_DEPTH = 2  # maximum depth of nested expressions
+MAX_DEPTH = 3 # maximum depth of nested expressions
+#
+# def random_var_name():
+#     return random.choice(["x"]) + str(random.randint(0, 9))
+#
+#
+# # Generate a random integer expression recursively
+# def random_int_expr(vars_list, depth=0):
+#     if depth >= MAX_DEPTH or random.random() < 0.3:
+#         # Base case: constant or variable
+#         return random.choice(vars_list) if random.random() < 0.5 else random.randint(0, 10)
+#
+#     # Random operation
+#     op = random.choice(['+', '-', '*'])
+#     left = random_int_expr(vars_list, depth + 1)
+#     right = random_int_expr(vars_list, depth + 1)
+#
+#     if op == '+':
+#         return left + right
+#     elif op == '-':
+#         return left - right
+#     elif op == '*':
+#         return left * right
+#
+#
+# # Generate a random Boolean comparison between integer expressions
+# def random_bool_expr(vars_list):
+#     left = random_int_expr(vars_list)
+#     right = random_int_expr(vars_list)
+#     op = random.choice(['>', '<', '>=', '<=', '='])
+#     if op == '>':
+#         return left > right
+#     elif op == '<':
+#         return left < right
+#     elif op == '>=':
+#         return left >= right
+#     elif op == '<=':
+#         return left <= right
+#     elif op == '=':
+#         return left == right
+#
+#
+# vars_list = [Int(random_var_name()) for _ in range(NUM_VARS)]
+#
+# # Generate random Boolean assertions
+# solver = Solver()
+# for _ in range(NUM_ASSERTS):
+#     expr = random_bool_expr(vars_list)
+#     solver.add(expr)
+#
+# print(solver.to_smt2())
+# print(solver.model()) if solver.check() == sat else print(solver.check())
 
+#https://deap.readthedocs.io/en/master/tutorials/basic/part2.html
 
-# -------------------------
-# Helper functions
-# -------------------------
-def random_var_name():
-    return random.choice(["x"]) + str(random.randint(0, 9))
+pset = gp.PrimitiveSetTyped("MAIN", [ArithRef]*NUM_VARS, BoolRef)
 
+pset.addPrimitive(lambda x, y: x + y, [ArithRef, ArithRef], ArithRef, name="add")
+pset.addPrimitive(lambda x, y: x - y, [ArithRef, ArithRef], ArithRef, name="sub")
+pset.addPrimitive(lambda x, y: x * y, [ArithRef, ArithRef], ArithRef, name="mul")
 
-# Generate a random integer expression recursively
-def random_int_expr(vars_list, depth=0):
-    if depth >= MAX_DEPTH or random.random() < 0.3:
-        # Base case: constant or variable
-        return random.choice(vars_list) if random.random() < 0.5 else random.randint(0, 10)
+pset.addPrimitive(lambda x, y: x > y, [ArithRef, ArithRef], BoolRef, name="gt")
+pset.addPrimitive(lambda x, y: x < y, [ArithRef, ArithRef], BoolRef, name="lt")
+pset.addPrimitive(lambda x, y: x >= y, [ArithRef, ArithRef], BoolRef, name="ge")
+pset.addPrimitive(lambda x, y: x <= y, [ArithRef, ArithRef], BoolRef, name="le")
+pset.addPrimitive(lambda x, y: x == y, [ArithRef, ArithRef], BoolRef, name="eq")
 
-    # Random operation
-    op = random.choice(['+', '-', '*'])
-    left = random_int_expr(vars_list, depth + 1)
-    right = random_int_expr(vars_list, depth + 1)
+pset.addEphemeralConstant("rand100", lambda: random.randint(0, 100), ArithRef)
 
-    if op == '+':
-        return left + right
-    elif op == '-':
-        return left - right
-    elif op == '*':
-        return left * right
+pset.addTerminal(True, BoolRef)
+pset.addTerminal(False, BoolRef)
 
+#creator.create defines new classes at runtime which inherit from existing python types e.g base.Fitness
+creator.create("RunTimeFitness", base.Fitness, weights = (1.0,))
+creator.create("IndividualSMT", gp.PrimitiveTree, fitness = creator.RunTimeFitness)
 
-# Generate a random Boolean comparison between integer expressions
-def random_bool_expr(vars_list):
-    left = random_int_expr(vars_list)
-    right = random_int_expr(vars_list)
-    op = random.choice(['>', '<', '>=', '<=', '='])
-    if op == '>':
-        return left > right
-    elif op == '<':
-        return left < right
-    elif op == '>=':
-        return left >= right
-    elif op == '<=':
-        return left <= right
-    elif op == '=':
-        return left == right
+toolbox = base.Toolbox()
 
+#toolbox.register is used to name and store functions with preset arguments so they can be called easily
 
-# -------------------------
-# Generate variables
-# -------------------------
-vars_list = [Int(random_var_name()) for _ in range(NUM_VARS)]
+#expr generates a random GP tree
+toolbox.register("expr", gp.genFull, pset=pset, min_=1, max_=MAX_DEPTH)
 
-# -------------------------
-# Generate random Boolean assertions
-# -------------------------
-solver = Solver()
-for _ in range(NUM_ASSERTS):
-    expr = random_bool_expr(vars_list)
-    solver.add(expr)
+#individual wraps that tree in an Individual object with fitness
+toolbox.register("individual", tools.initIterate, creator.IndividualSMT, toolbox.expr)
 
-# -------------------------
-# Output SMT-LIB
-# -------------------------
-print(solver.to_smt2())
+#population creates n individuals to form the GP population
+toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+
+def eval_individualSMT(individual):
+    #compile GP tree into callable function
+    func = gp.compile(expr=individual, pset=pset)
+
+    #create z3 integer vars
+    z3_variables = [Int(f"x{i}") for i in range(NUM_VARS)]
+    #z3 variables = [x0, x1]
+
+    #initialise a z3 solver
+    z3_solver = Solver()
+    z3_solver.set("timeout", 100000)
+    #for _ in range(NUM_ASSERTS) <- can add multiple constraints into one individual
+    #typically one constraint per individual
+
+    #evaluate GP expression with list (*) of z3 variables
+    #z3_expr = func(Int("x0"), Int("x1"), Int("x2"))
+    z3_expr = func(*z3_variables)
+    #z3_expr = x0 - x1 + 7
+
+    z3_solver.add(z3_expr)
+
+    #measure how long z3 takes
+    import time
+    start = time.time()
+    z3_solver.check()
+    end = time.time()
+    solve_time = end - start
+
+    #return fitness
+    return (solve_time, )
+
+#these act as direct aliases i.e. when toolbox.evaluate is called run eval_.. function
+toolbox.register("evaluate", eval_individualSMT)
+toolbox.register("select", tools.selTournament, tournsize=3)
+toolbox.register("mate", gp.cxOnePoint)
+toolbox.register("expr_mut", gp.genFull, min_=0, max_=2)
+toolbox.register("mutate", gp.mutUniform, expr=toolbox.expr_mut, pset=pset)
+
+#gp loop
+def main():
+
+    #random.seed(22)
+
+    population = toolbox.population(n=1000)
+    hof = tools.HallOfFame(5)
+
+    statistics = tools.Statistics(lambda smt: smt.fitness.values[0])
+    statistics.register("avg", lambda fits: sum(fits) / len(fits))
+    statistics.register("min", min)
+    statistics.register("max", max)
+
+    population, log = algorithms.eaSimple(
+        population = population,
+        toolbox = toolbox,
+        cxpb = 0.5,
+        mutpb = 0.2,
+        ngen = 1,
+        stats = statistics,
+        halloffame = hof,
+        verbose = False
+    )
+
+    def pretty_print_tree(tree):
+        # Convert DEAP PrimitiveTree to string
+        s = str(tree)
+
+        # Replace DEAP primitive names with symbols
+        s = s.replace("add", "+")
+        s = s.replace("sub", "-")
+        s = s.replace("mul", "*")
+        s = s.replace("gt", ">")
+        s = s.replace("lt", "<")
+        s = s.replace("ge", ">=")
+        s = s.replace("le", "<=")
+        s = s.replace("eq", "==")
+
+        return s
+
+    # Print Hall of Fame
+    print("Best individuals:")
+    for smt in hof:
+        print(pretty_print_tree(smt))
+        print(smt.fitness.values)
+
+    return population, log, hof
+    #for g in range(NGEN)
+    #offspring = toolbox.select(pop, len(pop))
+    #offspring = map(toolbox.clone, offspring)
+
+        #for c1, c2 in zip(offspring)
+            #some sort of random probability to crossover
+            #delete original fitness values for c1, c2 (irrelevant)
+
+        #for mutant in offspring
+            #some sort of random probability to mutate
+            #delete mutant fitness value
+
+        #evaluate individuals
+    #pass
+if __name__ == "__main__":
+    main()
