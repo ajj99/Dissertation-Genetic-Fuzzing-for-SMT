@@ -1,276 +1,19 @@
-
-# from z3 import *
-# import cvc5
-# from cvc5 import Kind
-# import random
-# from deap import base, creator, tools, gp, algorithms
-# import operator
-# import math
-# import time
-# from abc import ABC, abstractmethod
-#
-#
-# class SolverAdapter(ABC):
-#     """Abstract base class for any SMT solver."""
-#     @abstractmethod
-#     def const(self, val): pass
-#     @abstractmethod
-#     def add(self, x, y): pass
-#     @abstractmethod
-#     def sub(self, x, y): pass
-#     @abstractmethod
-#     def mul(self, x, y): pass
-#     @abstractmethod
-#     def gt(self, x, y): pass
-#     @abstractmethod
-#     def lt(self, x, y): pass
-#     @abstractmethod
-#     def ge(self, x, y): pass
-#     @abstractmethod
-#     def le(self, x, y): pass
-#     @abstractmethod
-#     def eq(self, x, y): pass
-#     @abstractmethod
-#     def make_vars(self, num): pass
-#     @abstractmethod
-#     def assert_formula(self, expr): pass
-#     @abstractmethod
-#     def check(self): pass
-#
-# class Z3Adapter(SolverAdapter):
-#     def __init__(self):
-#         self.solver = Solver()
-#
-#     # z3 works with symbolic objects IntVal, BoolVan etc not plain integers/bools
-#     # so const converts a python int -> z3 int constant for e.g
-#     def const(self, val):
-#         if isinstance(val, (int, bool)):
-#             return IntVal(val) if isinstance(val, int) else BoolVal(val)
-#         return val
-#
-#     #regularly defined operators as z3, internally defined __methods in z3
-#     def add(self, x, y): return x + y
-#     def sub(self, x, y): return x - y
-#     def mul(self, x, y): return x * y
-#     def gt(self, x, y): return x > y
-#     def lt(self, x, y): return x < y
-#     def ge(self, x, y): return x >= y
-#     def le(self, x, y): return x <= y
-#     def eq(self, x, y): return x == y
-#
-#     def make_vars(self, num):
-#         return [Int(f"x{i}") for i in range(num)]
-#
-#     def assert_formula(self, expr):
-#         self.solver.add(expr)
-#
-#     def check(self):
-#         return self.solver.check()
-#
-# class CVC5Adapter(SolverAdapter):
-#     class Term:
-#         #Wraps a cvc5.Term and implements Python operators
-#         def __init__(self, adapter, term):
-#             self.adapter = adapter
-#             self.term = term
-#
-#         #if other is already a cvc5adapter term, returns the underlying cvc5 term
-#         #if other is not, such as int or bool, sends to const
-#         # which converts it into a cvc5 term via mkinteger, etc.
-#         def unwrap(self, other):
-#             if isinstance(other, CVC5Adapter.Term):
-#                 return other.term
-#             return self.adapter.const(other)
-#
-#         # Operator overloads, Python internally performs these when it sees +, -, etc.
-#         #r funcs handle reverse cases where a constant is on the LHS (3+x) not RHS (x+3)
-#         #takes the expr either side of the operator and recursively unpacks them and then wraps them into a cvc5 term
-#         def __add__(self, other): return CVC5Adapter.Term(self.adapter, self.adapter.add(self.term, self.unwrap(other)))
-#         def __radd__(self, other): return CVC5Adapter.Term(self.adapter, self.adapter.add(self.unwrap(other), self.term))
-#         def __sub__(self, other): return CVC5Adapter.Term(self.adapter, self.adapter.sub(self.term, self.unwrap(other)))
-#         def __rsub__(self, other): return CVC5Adapter.Term(self.adapter, self.adapter.sub(self.unwrap(other), self.term))
-#         def __mul__(self, other): return CVC5Adapter.Term(self.adapter, self.adapter.mul(self.term, self.unwrap(other)))
-#         def __rmul__(self, other): return CVC5Adapter.Term(self.adapter, self.adapter.mul(self.unwrap(other), self.term))
-#
-#
-#         def __gt__(self, other): return CVC5Adapter.Term(self.adapter, self.adapter.gt(self.term, self.unwrap(other)))
-#         def __lt__(self, other): return CVC5Adapter.Term(self.adapter, self.adapter.lt(self.term, self.unwrap(other)))
-#         def __ge__(self, other): return CVC5Adapter.Term(self.adapter, self.adapter.ge(self.term, self.unwrap(other)))
-#         def __le__(self, other): return CVC5Adapter.Term(self.adapter, self.adapter.le(self.term, self.unwrap(other)))
-#         def __eq__(self, other): return CVC5Adapter.Term(self.adapter, self.adapter.eq(self.term, self.unwrap(other)))
-#
-#         def __repr__(self): return f"CVC5Term({self.term})"
-#
-#     def __init__(self):
-#         self.solver = cvc5.Solver()
-#         self.solver.setLogic("QF_NIA")
-#         self.solver.setOption("tlimit", "1000")
-#         self.sort = self.solver.getIntegerSort()
-#
-#     def const(self, val):
-#         if isinstance(val, CVC5Adapter.Term):
-#             return val.term
-#         if isinstance(val, bool):
-#             return self.solver.mkBoolean(val)
-#         if isinstance(val, cvc5.Term):
-#             return val
-#         return self.solver.mkInteger(val)
-#
-#     # Primitive operations
-#     def add(self, x, y): return self.solver.mkTerm(Kind.ADD, x, y)
-#     def sub(self, x, y): return self.solver.mkTerm(Kind.SUB, x, y)
-#     def mul(self, x, y): return self.solver.mkTerm(Kind.MULT, x, y)
-#     def gt(self, x, y): return self.solver.mkTerm(Kind.GT, x, y)
-#     def lt(self, x, y): return self.solver.mkTerm(Kind.LT, x, y)
-#     def ge(self, x, y): return self.solver.mkTerm(Kind.GEQ, x, y)
-#     def le(self, x, y): return self.solver.mkTerm(Kind.LEQ, x, y)
-#     def eq(self, x, y): return self.solver.mkTerm(Kind.EQUAL, x, y)
-#
-#     def make_vars(self, num):
-#         raw = [self.solver.mkConst(self.sort, f"x{i}") for i in range(num)]
-#         return [CVC5Adapter.Term(self, t) for t in raw]
-#
-#     def assert_formula(self, expr):
-#         if isinstance(expr, CVC5Adapter.Term):
-#             expr = expr.term
-#
-#         elif isinstance(expr, bool):
-#             expr = self.solver.mkBoolean(expr)
-#         self.solver.assertFormula(expr)
-#     def check(self):
-#         return self.solver.checkSat()
-#
-# #CONFIG
-# NUM_VARS = 3
-# NUM_ASSERTS = 2
-# MAX_DEPTH = 3
-#
-# #PRIMITIVES
-# # Use only ArithRef/BoolRef-like types from the z3 module so gp.compile creates
-# # functions that expect numeric/bool-like arguments.
-# pset = gp.PrimitiveSetTyped("MAIN", [ArithRef] * NUM_VARS, BoolRef)
-#
-# # Arithmetic operations use operator.* (these will call CVC5Proxy methods when needed)
-# pset.addPrimitive(operator.add, [ArithRef, ArithRef], ArithRef, name="add")
-# pset.addPrimitive(operator.sub, [ArithRef, ArithRef], ArithRef, name="sub")
-# pset.addPrimitive(operator.mul, [ArithRef, ArithRef], ArithRef, name="mul")
-#
-# # Comparisons
-# pset.addPrimitive(operator.gt, [ArithRef, ArithRef], BoolRef, name="gt")
-# pset.addPrimitive(operator.lt, [ArithRef, ArithRef], BoolRef, name="lt")
-# pset.addPrimitive(operator.ge, [ArithRef, ArithRef], BoolRef, name="ge")
-# pset.addPrimitive(operator.le, [ArithRef, ArithRef], BoolRef, name="le")
-# pset.addPrimitive(operator.eq, [ArithRef, ArithRef], BoolRef, name="eq")
-#
-# # constants and terminals
-# pset.addEphemeralConstant("rand100", lambda: random.randint(0, 100), ArithRef)
-# pset.addTerminal(True, BoolRef)
-# pset.addTerminal(False, BoolRef)
-#
-# #DEAP SETUP
-# creator.create("RunTimeFitness", base.Fitness, weights=(1.0,))
-# creator.create("IndividualSMT", gp.PrimitiveTree, fitness=creator.RunTimeFitness)
-#
-# toolbox = base.Toolbox()
-# toolbox.register("expr", gp.genFull, pset=pset, min_=1, max_=MAX_DEPTH)
-# toolbox.register("individual", tools.initIterate, creator.IndividualSMT, toolbox.expr)
-# toolbox.register("population", tools.initRepeat, list, toolbox.individual)
-#
-# # evaluation -> compile once, run on both adapters
-# def eval_individualSMT(individual):
-#     func = gp.compile(expr=individual, pset=pset)
-#
-#     # ----- Z3 -----
-#     z3 = Z3Adapter()
-#     z3_vars = z3.make_vars(NUM_VARS)             # returns real z3 Ints
-#     z3_expr = func(*z3_vars)                     # compiled function uses operator.* which works for z3
-#     z3.assert_formula(z3_expr)
-#     start = time.time()
-#     z3.check()
-#     z3_time = time.time() - start
-#
-#     # ----- cvc5 -----
-#     cvc5_adapter = CVC5Adapter()
-#     cvc5_vars = cvc5_adapter.make_vars(NUM_VARS)
-#     cvc5_expr = func(*cvc5_vars)                  # compiled function uses operator.*, proxies delegate to adapter
-#
-#     # if cvc5_expr is wrapped, unwrap to raw term before asserting
-#     if isinstance(cvc5_expr, CVC5Adapter.Term):
-#         cvc5_expr = cvc5_expr.term
-#
-#     cvc5_adapter.assert_formula(cvc5_expr)
-#     start = time.time()
-#     cvc5_adapter.check()
-#     cvc5_time = time.time() - start
-#
-#     # difference between relative
-#     return ((z3_time + cvc5_time) / 2, )
-#
-# toolbox.register("evaluate", eval_individualSMT)
-# toolbox.register("select", tools.selTournament, tournsize=3)
-# toolbox.register("mate", gp.cxOnePoint)
-# toolbox.register("expr_mut", gp.genFull, min_=0, max_=2)
-# toolbox.register("mutate", gp.mutUniform, expr=toolbox.expr_mut, pset=pset)
-#
-# # GP loop (unchanged)
-# def main():
-#     population = toolbox.population(n=20)   # use smaller for testing
-#     hof = tools.HallOfFame(5)
-#
-#     statistics = tools.Statistics(lambda smt: smt.fitness.values[0])
-#     statistics.register("avg", lambda fits: sum(fits) / len(fits))
-#     statistics.register("min", min)
-#     statistics.register("max", max)
-#
-#     population, log = algorithms.eaSimple(
-#         population=population,
-#         toolbox=toolbox,
-#         cxpb=0.5,
-#         mutpb=0.2,
-#         ngen=5,
-#         stats=statistics,
-#         halloffame=hof,
-#         verbose=False
-#     )
-#
-#     def pretty_print_tree(tree):
-#         s = str(tree)
-#         s = s.replace("add", "+")
-#         s = s.replace("sub", "-")
-#         s = s.replace("mul", "*")
-#         s = s.replace("gt", ">")
-#         s = s.replace("lt", "<")
-#         s = s.replace("ge", ">=")
-#         s = s.replace("le", "<=")
-#         s = s.replace("eq", "==")
-#         return s
-#
-#     print("Best individuals:")
-#     for smt in hof:
-#         print(pretty_print_tree(smt))
-#         print(smt.fitness.values)
-#
-#     return population, log, hof
-#
-# if __name__ == "__main__":
-#     main()
-#
 from z3 import *
 import subprocess
 from z3 import Solver
 import random
-import time
+import time, datetime
 from deap import base, creator, tools, gp, algorithms
-# from pysmt.shortcuts import Solver
-# from pysmt.smtlib.parser import SmtLibParser
 from io import StringIO
 import operator
+import os
+import csv
 
 # ===========================================================
 # 1. GP + Z3 Primitive Setup
 # ===========================================================
 
-NUM_VARS = 3
+NUM_VARS = 5
 MAX_DEPTH = 6
 
 pset = gp.PrimitiveSetTyped("MAIN", [ArithRef]*NUM_VARS, BoolRef)
@@ -313,12 +56,37 @@ toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 # ===========================================================
 
 def measure_runtime_subprocess_stdin(smtlib_str, solver_cmd):
-
+    timeout_seconds=3
     start = time.time()
-    subprocess.run([solver_cmd, "-in"], input=smtlib_str, text=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    end = time.time()
-    return end - start
+    try:
+        if solver_cmd == "z3":
+            proc = subprocess.run([solver_cmd, "-in"], input=smtlib_str, text=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout_seconds)
+        elif solver_cmd == "cvc5":
+            proc = subprocess.run([solver_cmd, "--lang", "smtlib2"], input=smtlib_str, text=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout_seconds)
+
+        elif solver_cmd == "mathsat":
+            proc = subprocess.run([solver_cmd, "-input=smt2"], input=smtlib_str, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout_seconds)
+
+        end = time.time()
+        output = proc.stdout.strip().lower()
+
+        if proc.returncode == 0:
+            if "sat" in output or "unsat" in output:
+                result = "intime"
+                return end - start, result
+            else: #"unknown", probably rare that branch is hit
+                result = "timeoutOE"
+                return timeout_seconds, result
+        else:
+            result = "subFailed"
+            return -1, result
+
+    except subprocess.TimeoutExpired:
+        return timeout_seconds, "timeoutOE"
+
 
 def evaluate(individual):
     # Compile DEAP expression
@@ -338,84 +106,279 @@ def evaluate(individual):
     #print(z3_formula)
 
     # Manually set logic (example: QF_LIA)
-    logic_str = "(set-logic QF_LIA)\n"
+    logic_str = "(set-logic QF_NIA)\n"
 
     # Convert solver with assertions to SMT-LIB string
     smtlib_str = logic_str + s.to_smt2()
 
-    threads = 4
-    z3_header = f"(set-option :parallel.enable true)\n(set-option :parallel.threads {threads})\n"
-    cvc5_header = f"(set-option :threads {threads})\n"
+    t_z3, res_z3 = measure_runtime_subprocess_stdin(smtlib_str, "z3")
+    t_cvc5, res_cvc5 = measure_runtime_subprocess_stdin(smtlib_str, "cvc5")
+    t_mathsat, res_mathsat = measure_runtime_subprocess_stdin(smtlib_str, "mathsat")
 
-    t_z3 = measure_runtime_subprocess_stdin(z3_header + smtlib_str, "z3")
-    t_cvc5 = measure_runtime_subprocess_stdin(cvc5_header + smtlib_str, "cvc5")
+    individual.z3_time = t_z3
+    individual.cvc5_time = t_cvc5
+    individual.mathsat_time = t_mathsat
 
-    # Fitness = relative difference between runtimes
-    if max(t_z3, t_cvc5) == 0:
+    print(t_z3,t_cvc5,t_mathsat)
+
+    if (res_z3 == "subFailed" or
+        res_cvc5 == "subFailed" or
+        res_mathsat == "subFailed"):
+
+        individual.flag = "ERROR"
+        print("ERROR FORMULA")
+        return (0,)
+
+    if (res_z3 == "timeoutOE" and
+        res_cvc5 == "timeoutOE" and
+        res_mathsat == "timeoutOE"):
+
+        fitness = 200 # both timed out so give some reward and let it crossover
+        individual.flag = "OK"
+        return (fitness,)
+
+    timeouts = [
+        ("z3", res_z3, t_z3),
+        ("cvc5", res_cvc5, t_cvc5),
+        ("mathsat", res_mathsat, t_mathsat),
+    ]
+
+    timeout_solvers = [(name, t) for (name, res, t) in timeouts if res == "timeoutOE"]
+
+    if len(timeout_solvers) == 1:
+        # That solver is the time-out-of-stress (TOS)
+        name, time = timeout_solvers[0]
+        individual.TOS = {name}
+
+        # min runtime among non-timeout solvers
+        non_timeout_times = [t for (_, res, t) in timeouts if res == "intime"]
+        fitness = 1000 + (1 / min(non_timeout_times)) #should this be max?
+
+        individual.flag = "OK"
+        return (fitness,)
+
+    if len(timeout_solvers) == 2:
+        # The 1 non-timeout solver determines the “min time”
+        non_timeout_time = next(t for (_, res, t) in timeouts if res == "intime")
+        timeout_solvers_names = [name for (name, _) in timeout_solvers]
+
+        individual.TOS = set(timeout_solvers_names)
+
+        fitness = 1000 + (1 / non_timeout_time)
+
+        individual.flag = "OK"
+        return (fitness,)
+
+
+        # Fitness = relative difference between runtimes
+    threshold = 0.1
+    if max(t_z3, t_cvc5, t_mathsat) < threshold: #essentially ignore any SMT that run quickly on both
         fitness = 0.0
-    else:
+        individual.flag = "OK"
+        return (fitness,)
 
-        fitness = 100 * abs(t_z3 - t_cvc5) / max(t_z3, t_cvc5)
-        print(t_z3, t_cvc5,fitness)
+    times = {
+        "z3": t_z3,
+        "cvc5": t_cvc5,
+        "mathsat": t_mathsat,
+    }
 
+    slowest = max(times, key=times.get)
+    fastest = min(times, key=times.get)
+
+    difference = times[slowest] - times[fastest]
+
+    if difference > 0.5: #deemed to run significantly slower
+        individual.TOS = slowest
+
+    fitness = difference / times[fastest]
+
+    individual.TOS = set()
+    individual.flag = "OK"
     return (fitness,)
-    #return ((t_z3 + t_cvc5) / 2),
 
 # ===========================================================
 # 4. Register GP operators
 # ===========================================================
 
+def cxOnePointWithTOS(ind1, ind2):
+    tos1 = getattr(ind1, "TOS", set())
+    tos2 = getattr(ind2, "TOS", set())
+
+    # Only perform crossover if they share a struggling solver (TOS)
+    if tos1.intersection(tos2):
+        return gp.cxOnePoint(ind1, ind2)
+    else:
+        return ind1, ind2
+
 toolbox.register("evaluate", evaluate)
 toolbox.register("select", tools.selTournament, tournsize=3)
-toolbox.register("mate", gp.cxOnePoint)
+toolbox.register("mate", cxOnePointWithTOS)
 toolbox.register("expr_mut", gp.genFull, min_=0, max_=2)
 toolbox.register("mutate", gp.mutUniform, expr=toolbox.expr_mut, pset=pset)
+
+def join(ind1, ind2):
+    new_tree = ind1 + ind2
+    new_ind = creator.IndividualSMT(new_tree)
+    return new_ind
 
 # ===========================================================
 # 5. Run Evolution
 # ===========================================================
 
 def main():
-    population = toolbox.population(n=20)   # use smaller for testing
+
+    NGEN = 20
+    POP_SIZE = 20
+    # Initialize population and hall of fame
+    population = toolbox.population(n=POP_SIZE)
     hof = tools.HallOfFame(5)
 
+    # Set up statistics
     statistics = tools.Statistics(lambda smt: smt.fitness.values[0])
     statistics.register("avg", lambda fits: sum(fits) / len(fits))
     statistics.register("min", min)
     statistics.register("max", max)
 
-    population, log = algorithms.eaSimple(
-        population=population,
-        toolbox=toolbox,
-        cxpb=0.5,
-        mutpb=0.4,
-        ngen=30,
-        stats=statistics,
-        halloffame=hof,
-        verbose=False
+    # Parameters
+    cxpb = 0.6
+    mutpb = 0.2
+    jnpb = 0.2
+
+    logbook = tools.Logbook()
+    logbook.header = ["gen", "nevals"] + statistics.fields
+
+    # Evaluate initial population, each fitness starts as not valid as it hasn't been evaluated (new)
+    invalid_ind = [ind for ind in population if not ind.fitness.valid]
+    for ind in invalid_ind:
+        ind.fitness.values = toolbox.evaluate(ind)
+
+    # Remove any individuals which had solver return codes == 1
+    population = [ind for ind in population if getattr(ind, "flag", None) != "ERROR"]
+
+    record = statistics.compile(population)
+    logbook.record(gen=0, nevals=len(invalid_ind), **record)
+    print(logbook.stream)
+
+
+    # Begin the generational loop
+    for gen in range(1, NGEN + 1):
+
+        # Select the next generation individuals
+        parents = toolbox.select(population, POP_SIZE)
+
+        # Clone parents to retain
+        cloned_parents = [toolbox.clone(ind) for ind in parents]
+
+        # Apply crossover and mutation
+        children = algorithms.varAnd(cloned_parents, toolbox, cxpb=cxpb, mutpb=mutpb)
+
+        # Offspring is now (mutated/crossed) offspring + original parents
+        offspring = parents + children
+
+        # "Join" operator -> creates new individuals from parents
+        joined_offspring = []
+        for i in range(0, len(parents) - 1, 2):
+            if random.random() < jnpb:
+                new_ind = join(parents[i], parents[i + 1])
+                joined_offspring.append(new_ind)
+
+        # Add any new (joined) individuals to the offspring
+        offspring.extend(joined_offspring)
+
+        # Evaluate the individuals who don't have a fitness yet (new)
+        invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
+        for ind in invalid_ind:
+            ind.fitness.values = toolbox.evaluate(ind)
+
+        # Remove any individuals which had solver return codes == 1
+        offspring = [ind for ind in offspring if getattr(ind, "flag", None) != "ERROR"]
+
+        # Select top POP_SIZE individuals for next generation
+        offspring.sort(key=lambda ind: ind.fitness.values[0], reverse=True)
+        population[:] = offspring[:POP_SIZE]
+
+        # Update the hall of fame with the generated individuals
+        hof.update(population)
+
+        # Record statistics
+        record = statistics.compile(population)
+        logbook.record(gen=gen, nevals=len(invalid_ind), **record)
+        print(logbook.stream)
+
+    # Folder inside results/
+    subfolder = f"{NGEN}gens_{POP_SIZE}pop_{NUM_VARS}vars_{MAX_DEPTH}depth"
+    folder_path = os.path.join("results", subfolder)
+
+    # Create the subfolder if missing
+    os.makedirs(folder_path, exist_ok=True)
+
+    best_fitness = int(round((max(ind.fitness.values[0] for ind in hof))))
+
+    # Timestamped file
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"{best_fitness}_{timestamp}.csv"
+    file_path = os.path.join(folder_path, filename)
+
+    with open(file_path,"w",newline="",encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["formula", "fitness", "z3", "cvc5","mathsat"])
+        for ind in hof:
+            writer.writerow([
+                str(ind),
+                ind.fitness.values[0],
+                getattr(ind, "z3_time", None),
+                getattr(ind, "cvc5_time", None),
+                getattr(ind, "mathsat_time", None)
+            ])
+
+    print(f"Hall of Fame saved to {file_path}")
+    # print("Best individuals:")
+    # for smt in hof:
+    #     print(smt)
+    #     print(smt.fitness.values)
+    #     print(smt.z3_time, smt.cvc5_time, smt.mathsat_time)
+        #print runtimes here to store
+
+
+def rerun_query():
+    smt_query = """(set-logic QF_NIA)
+(declare-fun x3 () Int)
+(declare-fun x4 () Int)
+(declare-fun x1 () Int)
+(declare-fun x0 () Int)
+(declare-fun x2 () Int)
+(assert
+ (let ((?x184 (* (* (* x2 x0) (* x3 x1)) (* (* x4 x4) (+ x3 x3)))))
+(let ((?x73 (* (* (* x2 x4) (+ x0 x1)) (* (+ x2 x3) (* x0 x2)))))
+(< ?x73 ?x184))))
+(check-sat)
+
+"""
+
+    start_time = time.perf_counter()
+
+    result = subprocess.run(
+        ["cvc5", "--lang", "smt2"],
+        # ["z3","--in"],
+        input=smt_query,
+        text=True,
+        capture_output=True,
+        timeout=3
     )
 
-    # def pretty_print_tree(tree):
-    #     s = str(tree)
-    #     s = s.replace("add", "+")
-    #     s = s.replace("sub", "-")
-    #     s = s.replace("mul", "*")
-    #     s = s.replace("gt", ">")
-    #     s = s.replace("lt", "<")
-    #     s = s.replace("ge", ">=")
-    #     s = s.replace("le", "<=")
-    #     s = s.replace("eq", "==")
-    #     return s
+    end_time = time.perf_counter()
+    runtime = end_time - start_time
 
-    print("Best individuals:")
-    for smt in hof:
-        #print(pretty_print_tree(smt))
-        print(smt)
-        print(smt.fitness.values)
+    print("CVC5 Output:")
+    print(result.stdout.strip())
+    if result.stderr:
+        print("Errors:", result.stderr.strip())
 
-    return population, log, hof
+    print(f"Runtime: {runtime:.6f} seconds")
 
 if __name__ == "__main__":
+    #rerun_query()
     main()
 
 
