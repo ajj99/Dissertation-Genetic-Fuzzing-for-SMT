@@ -15,6 +15,7 @@ import csv
 
 NUM_VARS = 5
 MAX_DEPTH = 6
+timeout_seconds = 3
 
 pset = gp.PrimitiveSetTyped("MAIN", [ArithRef]*NUM_VARS, BoolRef)
 
@@ -35,10 +36,6 @@ pset.addPrimitive(lambda x, y: x == y, [ArithRef, ArithRef], BoolRef, name="eq")
 pset.addTerminal(BoolVal(True), BoolRef)
 pset.addTerminal(BoolVal(False), BoolRef)
 
-# pset.addPrimitive(And, [BoolRef, BoolRef], BoolRef, name="And")
-# pset.addPrimitive(Or, [BoolRef, BoolRef], BoolRef, name="Or")
-# pset.addPrimitive(Not, [BoolRef], BoolRef, name="Not")
-
 # ===========================================================
 # 2. DEAP individual and population setup
 # ===========================================================
@@ -56,7 +53,7 @@ toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 # ===========================================================
 
 def measure_runtime_subprocess_stdin(smtlib_str, solver_cmd):
-    timeout_seconds=3
+
     start = time.time()
     try:
         if solver_cmd == "z3":
@@ -94,6 +91,7 @@ def evaluate(individual):
 
     # Create Z3 variables
     vars_z3 = [Int(f"x{i}") for i in range(NUM_VARS)]
+
 
     # Build Z3 formula
     z3_formula = func(*vars_z3)
@@ -134,7 +132,7 @@ def evaluate(individual):
         res_mathsat == "timeoutOE"):
 
         fitness = 200 # both timed out so give some reward and let it crossover
-        individual.flag = "OK"
+        individual.flag = "TO"
         return (fitness,)
 
     timeouts = [
@@ -152,9 +150,9 @@ def evaluate(individual):
 
         # min runtime among non-timeout solvers
         non_timeout_times = [t for (_, res, t) in timeouts if res == "intime"]
-        fitness = 1000 + (1 / min(non_timeout_times)) #should this be max?
+        fitness = 1000 + (timeout_seconds / min(non_timeout_times)) #should this be max?
 
-        individual.flag = "OK"
+        individual.flag = "TO"
         return (fitness,)
 
     if len(timeout_solvers) == 2:
@@ -164,9 +162,9 @@ def evaluate(individual):
 
         individual.TOS = set(timeout_solvers_names)
 
-        fitness = 1000 + (1 / non_timeout_time)
+        fitness = 1000 + (timeout_seconds / non_timeout_time)
 
-        individual.flag = "OK"
+        individual.flag = "TO"
         return (fitness,)
 
 
@@ -227,8 +225,8 @@ def join(ind1, ind2):
 # ===========================================================
 
 def main():
-
-    NGEN = 20
+    global timeout_seconds
+    NGEN = 10
     POP_SIZE = 20
     # Initialize population and hall of fame
     population = toolbox.population(n=POP_SIZE)
@@ -264,27 +262,48 @@ def main():
     # Begin the generational loop
     for gen in range(1, NGEN + 1):
 
-        # Select the next generation individuals
-        parents = toolbox.select(population, POP_SIZE)
+        num_TO = sum(1 for ind in population if getattr(ind, "flag", None) == "TO")
 
-        # Clone parents to retain
-        cloned_parents = [toolbox.clone(ind) for ind in parents]
+        # If MORE THAN HALF timeout → increase the timeout by 1 second
+        if num_TO > len(population) / 2:
+            timeout_seconds += 1
+            print(f"More than half the population timed out at generation {gen}.")
+            print(f"Increasing timeout to {timeout_seconds} seconds.")
 
-        # Apply crossover and mutation
-        children = algorithms.varAnd(cloned_parents, toolbox, cxpb=cxpb, mutpb=mutpb)
+        for ind in population:
+            print(ind.flag, ind.fitness.values)
+
+        # Store original population as parents
+        parents = population
+
+        # Apply crossover and mutation (internally clones)
+        children = algorithms.varAnd(parents, toolbox, cxpb=cxpb, mutpb=mutpb)
 
         # Offspring is now (mutated/crossed) offspring + original parents
         offspring = parents + children
 
         # "Join" operator -> creates new individuals from parents
         joined_offspring = []
-        for i in range(0, len(parents) - 1, 2):
+        for i in range(0, len(offspring) - 1, 2):
             if random.random() < jnpb:
-                new_ind = join(parents[i], parents[i + 1])
+                new_ind = join(offspring[i], offspring[i + 1])
                 joined_offspring.append(new_ind)
 
         # Add any new (joined) individuals to the offspring
         offspring.extend(joined_offspring)
+
+        # Keep only distinct trees after cloning, mutation, crossover and join
+        seen = set()
+        unique_offspring = []
+        for ind in offspring:
+            if id(ind) not in seen:  # use the object id
+                seen.add(id(ind))
+                unique_offspring.append(ind)
+        offspring = unique_offspring
+
+        # # Mark all cloned/offspring individuals as requiring reevaluation
+        # for ind in offspring:
+        #     ind.fitness.values = toolbox.evaluate(ind) # force invalid
 
         # Evaluate the individuals who don't have a fitness yet (new)
         invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
@@ -294,26 +313,29 @@ def main():
         # Remove any individuals which had solver return codes == 1
         offspring = [ind for ind in offspring if getattr(ind, "flag", None) != "ERROR"]
 
+        # Update the hall of fame with the generated individuals
+        hof.update(offspring)
+
         # Select top POP_SIZE individuals for next generation
         offspring.sort(key=lambda ind: ind.fitness.values[0], reverse=True)
         population[:] = offspring[:POP_SIZE]
-
-        # Update the hall of fame with the generated individuals
-        hof.update(population)
 
         # Record statistics
         record = statistics.compile(population)
         logbook.record(gen=gen, nevals=len(invalid_ind), **record)
         print(logbook.stream)
 
+
     # Folder inside results/
-    subfolder = f"{NGEN}gens_{POP_SIZE}pop_{NUM_VARS}vars_{MAX_DEPTH}depth"
+    subfolder = f"{NGEN}gens_{POP_SIZE}pop_{NUM_VARS}vars_{MAX_DEPTH}depth_{jnpb}join_{mutpb}mut_{cxpb}cross_{timeout_seconds}to"
     folder_path = os.path.join("results", subfolder)
 
     # Create the subfolder if missing
     os.makedirs(folder_path, exist_ok=True)
 
     best_fitness = int(round((max(ind.fitness.values[0] for ind in hof))))
+    for ind in hof:
+        print(ind.fitness.values)
 
     # Timestamped file
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -333,6 +355,7 @@ def main():
             ])
 
     print(f"Hall of Fame saved to {file_path}")
+
     # print("Best individuals:")
     # for smt in hof:
     #     print(smt)
