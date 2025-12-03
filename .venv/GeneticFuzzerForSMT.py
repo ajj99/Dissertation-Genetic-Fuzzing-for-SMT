@@ -13,46 +13,50 @@ import csv
 # 1. GP + Z3 Primitive Setup
 # ===========================================================
 
-NUM_VARS = 5
-MAX_DEPTH = 6
-timeout_seconds = 3
-
-pset = gp.PrimitiveSetTyped("MAIN", [ArithRef]*NUM_VARS, BoolRef)
-
-# Arithmetic
-pset.addPrimitive(lambda x, y: x + y, [ArithRef, ArithRef], ArithRef, name="add")
-pset.addPrimitive(lambda x, y: x - y, [ArithRef, ArithRef], ArithRef, name="sub")
-pset.addPrimitive(lambda x, y: x * y, [ArithRef, ArithRef], ArithRef, name="mul")
-
-# Comparisons
-pset.addPrimitive(lambda x, y: x > y, [ArithRef, ArithRef], BoolRef, name="gt")
-pset.addPrimitive(lambda x, y: x < y, [ArithRef, ArithRef], BoolRef, name="lt")
-pset.addPrimitive(lambda x, y: x >= y, [ArithRef, ArithRef], BoolRef, name="ge")
-pset.addPrimitive(lambda x, y: x <= y, [ArithRef, ArithRef], BoolRef, name="le")
-pset.addPrimitive(lambda x, y: x == y, [ArithRef, ArithRef], BoolRef, name="eq")
-
-# Constants and terminals
-#pset.addEphemeralConstant("rand100", lambda: IntVal(random.randint(0, 100)), ArithRef)
-pset.addTerminal(BoolVal(True), BoolRef)
-pset.addTerminal(BoolVal(False), BoolRef)
-
-# ===========================================================
-# 2. DEAP individual and population setup
-# ===========================================================
-
-creator.create("RunTimeFitness", base.Fitness, weights=(1.0,))  # maximise runtime
+creator.create("RunTimeFitness", base.Fitness, weights=(1.0,))
 creator.create("IndividualSMT", gp.PrimitiveTree, fitness=creator.RunTimeFitness)
 
-toolbox = base.Toolbox()
-toolbox.register("expr", gp.genFull, pset=pset, min_=1, max_=MAX_DEPTH, type_=BoolRef)
-toolbox.register("individual", tools.initIterate, creator.IndividualSMT, toolbox.expr)
-toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+def DEAP_setup(NUM_VARS, MAX_DEPTH):
+    global toolbox, pset
+    pset = gp.PrimitiveSetTyped("MAIN", [ArithRef]*NUM_VARS, BoolRef)
+
+    # Arithmetic
+    pset.addPrimitive(lambda x, y: x + y, [ArithRef, ArithRef], ArithRef, name="add")
+    pset.addPrimitive(lambda x, y: x - y, [ArithRef, ArithRef], ArithRef, name="sub")
+    pset.addPrimitive(lambda x, y: x * y, [ArithRef, ArithRef], ArithRef, name="mul")
+
+    # Comparisons
+    pset.addPrimitive(lambda x, y: x > y, [ArithRef, ArithRef], BoolRef, name="gt")
+    pset.addPrimitive(lambda x, y: x < y, [ArithRef, ArithRef], BoolRef, name="lt")
+    pset.addPrimitive(lambda x, y: x >= y, [ArithRef, ArithRef], BoolRef, name="ge")
+    pset.addPrimitive(lambda x, y: x <= y, [ArithRef, ArithRef], BoolRef, name="le")
+    pset.addPrimitive(lambda x, y: x == y, [ArithRef, ArithRef], BoolRef, name="eq")
+
+    # Constants and terminals
+    #pset.addEphemeralConstant("rand100", lambda: IntVal(random.randint(0, 100)), ArithRef)
+    pset.addTerminal(BoolVal(True), BoolRef)
+    pset.addTerminal(BoolVal(False), BoolRef)
+
+    # ===========================================================
+    # 2. DEAP individual and population setup
+    # ===========================================================
+
+    toolbox = base.Toolbox()
+    toolbox.register("expr", gp.genFull, pset=pset, min_=1, max_=MAX_DEPTH, type_=BoolRef)
+    toolbox.register("individual", tools.initIterate, creator.IndividualSMT, toolbox.expr)
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+
+    toolbox.register("evaluate", evaluate)
+    toolbox.register("select", tools.selTournament, tournsize=3)
+    toolbox.register("mate", cxOnePointWithTOS)
+    toolbox.register("expr_mut", gp.genFull, min_=0, max_=2)
+    toolbox.register("mutate", gp.mutUniform, expr=toolbox.expr_mut, pset=pset)
 
 # ===========================================================
 # 3. Evaluation and Solving
 # ===========================================================
 
-def measure_runtime_subprocess_stdin(smtlib_str, solver_cmd):
+def measure_runtime_subprocess_stdin(smtlib_str, solver_cmd, timeout_seconds):
 
     start = time.time()
     try:
@@ -85,13 +89,13 @@ def measure_runtime_subprocess_stdin(smtlib_str, solver_cmd):
         return timeout_seconds, "timeoutOE"
 
 
-def evaluate(individual):
+def evaluate(individual, NUM_VARS, timeout_seconds):
     # Compile DEAP expression
+    #print(individual)
     func = gp.compile(expr=individual, pset=pset)
 
     # Create Z3 variables
     vars_z3 = [Int(f"x{i}") for i in range(NUM_VARS)]
-
 
     # Build Z3 formula
     z3_formula = func(*vars_z3)
@@ -109,13 +113,12 @@ def evaluate(individual):
     # Convert solver with assertions to SMT-LIB string
     smtlib_str = logic_str + s.to_smt2()
 
-    t_z3, res_z3 = measure_runtime_subprocess_stdin(smtlib_str, "z3")
-    t_cvc5, res_cvc5 = measure_runtime_subprocess_stdin(smtlib_str, "cvc5")
-    t_mathsat, res_mathsat = measure_runtime_subprocess_stdin(smtlib_str, "mathsat")
+    #print(smtlib_str)
+    individual.smtlib_str = smtlib_str
 
-    individual.z3_time = t_z3
-    individual.cvc5_time = t_cvc5
-    individual.mathsat_time = t_mathsat
+    t_z3, res_z3 = measure_runtime_subprocess_stdin(smtlib_str, "z3", timeout_seconds)
+    t_cvc5, res_cvc5 = measure_runtime_subprocess_stdin(smtlib_str, "cvc5", timeout_seconds)
+    t_mathsat, res_mathsat = measure_runtime_subprocess_stdin(smtlib_str, "mathsat", timeout_seconds)
 
     print(t_z3,t_cvc5,t_mathsat)
 
@@ -152,6 +155,7 @@ def evaluate(individual):
         non_timeout_times = [t for (_, res, t) in timeouts if res == "intime"]
         fitness = 1000 + (timeout_seconds / min(non_timeout_times)) #should this be max?
 
+        individual.fastest_runtime = min(non_timeout_times)
         individual.flag = "TO"
         return (fitness,)
 
@@ -164,6 +168,7 @@ def evaluate(individual):
 
         fitness = 1000 + (timeout_seconds / non_timeout_time)
 
+        individual.fastest_runtime = non_timeout_time
         individual.flag = "TO"
         return (fitness,)
 
@@ -193,6 +198,7 @@ def evaluate(individual):
 
     individual.TOS = set()
     individual.flag = "OK"
+    individual.fastest_runtime = times[fastest]
     return (fitness,)
 
 # ===========================================================
@@ -209,11 +215,6 @@ def cxOnePointWithTOS(ind1, ind2):
     else:
         return ind1, ind2
 
-toolbox.register("evaluate", evaluate)
-toolbox.register("select", tools.selTournament, tournsize=3)
-toolbox.register("mate", cxOnePointWithTOS)
-toolbox.register("expr_mut", gp.genFull, min_=0, max_=2)
-toolbox.register("mutate", gp.mutUniform, expr=toolbox.expr_mut, pset=pset)
 
 def join(ind1, ind2):
     new_tree = ind1 + ind2
@@ -224,10 +225,78 @@ def join(ind1, ind2):
 # 5. Run Evolution
 # ===========================================================
 
+GLOBAL_CSV = "all_fuzzer_results.csv"
+
+def init_global_csv():
+    if not os.path.exists(GLOBAL_CSV):
+        with open(GLOBAL_CSV, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "timestamp",
+                "POP_SIZE",
+                "NGEN",
+                "NUM_VARS",
+                "MAX_DEPTH",
+                "joinpb",
+                "mutpb",
+                "crosspb",
+                "fitness",
+                "formula",
+                "solver",
+                "runtime",
+                "diff_from_fastest"
+            ])
+
+
 def main():
-    global timeout_seconds
-    NGEN = 10
-    POP_SIZE = 20
+    init_global_csv()
+    timeout_seconds = 3
+
+    POP_SIZE_LIST   = [20, 50]
+    NGEN_LIST       = [10, 20]
+    NUM_VARS_LIST   = [4, 5]
+    MAX_DEPTH_LIST  = [5, 6]
+    JOINPB_LIST     = [0.2, 0.4]
+    MUTPB_LIST      = [0.2, 0.4]
+    CROSSPB_LIST    = [0.2, 0.4]
+
+    for pop in POP_SIZE_LIST:
+        for ngen in NGEN_LIST:
+            for num_vars in NUM_VARS_LIST:
+                for max_depth in MAX_DEPTH_LIST:
+                    for joinpb in JOINPB_LIST:
+                        for mutpb in MUTPB_LIST:
+                            for crosspb in CROSSPB_LIST:
+
+                                print("\n===================================================")
+                                print(f"Running fuzzer with parameters:")
+                                print(f"POP_SIZE   = {pop}")
+                                print(f"NGEN       = {ngen}")
+                                print(f"NUM_VARS   = {num_vars}")
+                                print(f"MAX_DEPTH  = {max_depth}")
+                                print(f"joinpb     = {joinpb}")
+                                print(f"mutpb      = {mutpb}")
+                                print(f"crosspb    = {crosspb}")
+                                print("===================================================\n")
+
+                                DEAP_setup(num_vars, max_depth)
+                                run_fuzzer(
+                                    POP_SIZE=pop,
+                                    NGEN=ngen,
+                                    NUM_VARS=num_vars,
+                                    MAX_DEPTH=max_depth,
+                                    jnpb=joinpb,
+                                    mutpb=mutpb,
+                                    cxpb=crosspb
+                                )
+
+
+
+def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb):
+    timeout_seconds = 3
+
+    #NGEN = 10
+    #POP_SIZE = 20
     # Initialize population and hall of fame
     population = toolbox.population(n=POP_SIZE)
     hof = tools.HallOfFame(5)
@@ -238,18 +307,13 @@ def main():
     statistics.register("min", min)
     statistics.register("max", max)
 
-    # Parameters
-    cxpb = 0.6
-    mutpb = 0.2
-    jnpb = 0.2
-
     logbook = tools.Logbook()
     logbook.header = ["gen", "nevals"] + statistics.fields
 
     # Evaluate initial population, each fitness starts as not valid as it hasn't been evaluated (new)
     invalid_ind = [ind for ind in population if not ind.fitness.valid]
     for ind in invalid_ind:
-        ind.fitness.values = toolbox.evaluate(ind)
+        ind.fitness.values = toolbox.evaluate(ind, NUM_VARS, timeout_seconds)
 
     # Remove any individuals which had solver return codes == 1
     population = [ind for ind in population if getattr(ind, "flag", None) != "ERROR"]
@@ -270,9 +334,6 @@ def main():
             print(f"More than half the population timed out at generation {gen}.")
             print(f"Increasing timeout to {timeout_seconds} seconds.")
 
-        for ind in population:
-            print(ind.flag, ind.fitness.values)
-
         # Store original population as parents
         parents = population
 
@@ -280,35 +341,41 @@ def main():
         children = algorithms.varAnd(parents, toolbox, cxpb=cxpb, mutpb=mutpb)
 
         # Offspring is now (mutated/crossed) offspring + original parents
-        offspring = parents + children
+        join_pool = parents + children
 
         # "Join" operator -> creates new individuals from parents
         joined_offspring = []
-        for i in range(0, len(offspring) - 1, 2):
+        for i in range(0, len(join_pool) - 1, 2):
             if random.random() < jnpb:
-                new_ind = join(offspring[i], offspring[i + 1])
+                new_ind = join(join_pool[i], join_pool[i + 1])
                 joined_offspring.append(new_ind)
 
-        # Add any new (joined) individuals to the offspring
-        offspring.extend(joined_offspring)
+        offspring = parents + children + joined_offspring
+
+        for ind in children + joined_offspring:
+            del ind.fitness.values  # marks them as invalid
 
         # Keep only distinct trees after cloning, mutation, crossover and join
         seen = set()
         unique_offspring = []
         for ind in offspring:
-            if id(ind) not in seen:  # use the object id
-                seen.add(id(ind))
+            tree_str = str(ind)
+            if tree_str not in seen:  # use the object id
+                seen.add(tree_str)
                 unique_offspring.append(ind)
+            # else:
+            #     print("FOUND DUPLICATE")
+
         offspring = unique_offspring
 
-        # # Mark all cloned/offspring individuals as requiring reevaluation
+        # # # Mark all cloned/offspring individuals as requiring reevaluation
         # for ind in offspring:
-        #     ind.fitness.values = toolbox.evaluate(ind) # force invalid
+        #     ind.fitness.values = toolbox.evaluate(ind, NUM_VARS, timeout_seconds) # force invalid
 
         # Evaluate the individuals who don't have a fitness yet (new)
         invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
         for ind in invalid_ind:
-            ind.fitness.values = toolbox.evaluate(ind)
+            ind.fitness.values = toolbox.evaluate(ind, NUM_VARS, timeout_seconds)
 
         # Remove any individuals which had solver return codes == 1
         offspring = [ind for ind in offspring if getattr(ind, "flag", None) != "ERROR"]
@@ -320,90 +387,69 @@ def main():
         offspring.sort(key=lambda ind: ind.fitness.values[0], reverse=True)
         population[:] = offspring[:POP_SIZE]
 
+        for ind in population:
+            print(ind.flag, ind.fitness.values)
+
         # Record statistics
         record = statistics.compile(population)
         logbook.record(gen=gen, nevals=len(invalid_ind), **record)
         print(logbook.stream)
 
+    best_ind = max(hof, key=lambda ind: ind.fitness.values[0])
+    best_formula = str(best_ind)
+    best_fitness = best_ind.fitness.values[0]
 
-    # Folder inside results/
-    subfolder = f"{NGEN}gens_{POP_SIZE}pop_{NUM_VARS}vars_{MAX_DEPTH}depth_{jnpb}join_{mutpb}mut_{cxpb}cross_{timeout_seconds}to"
-    folder_path = os.path.join("results", subfolder)
+    # Determine struggle solver
+    tos = getattr(best_ind, "TOS", None)
 
-    # Create the subfolder if missing
-    os.makedirs(folder_path, exist_ok=True)
+    if isinstance(tos, set):
+        struggle_solver = list(tos)[0] if tos else "None"
+    else:
+        struggle_solver = tos
 
-    best_fitness = int(round((max(ind.fitness.values[0] for ind in hof))))
-    for ind in hof:
-        print(ind.fitness.values)
+    print(f"Struggle solver selected: {struggle_solver}")
 
-    # Timestamped file
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"{best_fitness}_{timestamp}.csv"
-    file_path = os.path.join(folder_path, filename)
+    smt_query = getattr(best_ind, "smtlib_str", None)
+    # Re-run on struggle solver with 10 min timeout
+    if tos and smt_query:
+        long_timeout_runtime, _ = measure_runtime_subprocess_stdin(smt_query, struggle_solver, 600)
+        print(f"10-minute timeout runtime: {long_timeout_runtime} sec")
 
-    with open(file_path,"w",newline="",encoding="utf-8") as f:
+        # Compute difference from fastest
+        fastest = getattr(best_ind, "fastest_runtime", None)
+        if fastest is not None:
+            diff = long_timeout_runtime - fastest
+        else:
+            diff = 0
+    else:
+        diff = 0
+        long_timeout_runtime = 0
+
+    # Append one row to global CSV
+    timestamp = datetime.datetime.now().isoformat()
+
+    with open(GLOBAL_CSV, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["formula", "fitness", "z3", "cvc5","mathsat"])
-        for ind in hof:
-            writer.writerow([
-                str(ind),
-                ind.fitness.values[0],
-                getattr(ind, "z3_time", None),
-                getattr(ind, "cvc5_time", None),
-                getattr(ind, "mathsat_time", None)
-            ])
+        writer.writerow([
+            timestamp,
+            POP_SIZE,
+            NGEN,
+            NUM_VARS,
+            MAX_DEPTH,
+            jnpb,
+            mutpb,
+            cxpb,
+            best_fitness,
+            best_formula,
+            struggle_solver,
+            long_timeout_runtime,
+            diff
+        ])
 
-    print(f"Hall of Fame saved to {file_path}")
-
-    # print("Best individuals:")
-    # for smt in hof:
-    #     print(smt)
-    #     print(smt.fitness.values)
-    #     print(smt.z3_time, smt.cvc5_time, smt.mathsat_time)
-        #print runtimes here to store
-
-
-def rerun_query():
-    smt_query = """(set-logic QF_NIA)
-(declare-fun x3 () Int)
-(declare-fun x4 () Int)
-(declare-fun x1 () Int)
-(declare-fun x0 () Int)
-(declare-fun x2 () Int)
-(assert
- (let ((?x184 (* (* (* x2 x0) (* x3 x1)) (* (* x4 x4) (+ x3 x3)))))
-(let ((?x73 (* (* (* x2 x4) (+ x0 x1)) (* (+ x2 x3) (* x0 x2)))))
-(< ?x73 ?x184))))
-(check-sat)
-
-"""
-
-    start_time = time.perf_counter()
-
-    result = subprocess.run(
-        ["cvc5", "--lang", "smt2"],
-        # ["z3","--in"],
-        input=smt_query,
-        text=True,
-        capture_output=True,
-        timeout=3
-    )
-
-    end_time = time.perf_counter()
-    runtime = end_time - start_time
-
-    print("CVC5 Output:")
-    print(result.stdout.strip())
-    if result.stderr:
-        print("Errors:", result.stderr.strip())
-
-    print(f"Runtime: {runtime:.6f} seconds")
+    print(f"Logged run to {GLOBAL_CSV}")
 
 if __name__ == "__main__":
-    #rerun_query()
     main()
-
 
 
 
