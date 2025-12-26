@@ -19,18 +19,18 @@ client = OpenAI()
 def call_LLM(prompt):
     """Send prompt to LLM and return the text."""
     response = client.chat.completions.create(
-        model="gpt-4o-mini",  # or your model from Uni of Edinburgh
+        model="gpt-4o",  # or your model from Uni of Edinburgh
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.6
+        temperature=0.4
     )
+    #print("TOTAL TOKENS USED:", response.usage.total_tokens)
     return response.choices[0].message.content.strip()
 
+# ge(add(ARG0, ARG3), add(ARG2, ARG2)) <--- print(individual) <- stored like this by DEAP
 
-# ge(add(ARG0, ARG3), add(ARG2, ARG2)) <--- print(individual)
+# x0 + x3 >= x2 + x2 <--- print(z3 representation) -> the best way for LLM to output? can easily add logic and s.to_smt2(), made by gp.compile
 
-# x0 + x3 >= x2 + x2 <--- print(z3 representation) -> the best way for LLM to output? can easily add logic and s.to_smt2()
-
-# (set-logic QF_NIA) <--- print(gp_tree_to_smt(individual))
+# (set-logic QF_NIA) <--- print(gp_tree_to_smt(individual)), made adding converting z3 representation into smt-lib with s.to_smt2 and adding logic at the top
 # ; benchmark generated from python API
 # (set-info :status unknown)
 # (declare-fun x2 () Int)
@@ -79,7 +79,7 @@ def DEAP_setup(NUM_VARS, MAX_DEPTH):
 
     toolbox.register("evaluate", evaluate)
     toolbox.register("select", tools.selTournament, tournsize=3)
-    toolbox.register("mate", cxOnePointWithTOS)
+    toolbox.register("mate", gp.cxOnePoint) #change this later
     toolbox.register("expr_mut", gp.genFull, min_=0, max_=2)
     toolbox.register("mutate", gp.mutUniform, expr=toolbox.expr_mut, pset=pset)
 
@@ -123,7 +123,7 @@ def measure_runtime_subprocess_stdin(smtlib_str, solver_cmd, timeout_seconds):
 def gp_tree_to_smt(individual):
     """Convert DEAP GP tree into an SMT-LIB formula string."""
     func = gp.compile(expr=individual, pset=pset)
-    vars_z3 = [Int(f"x{i}") for i in range(NUM_VARS)]
+    vars_z3 = [Int(f"x{i}") for i in range(4)]
     z3_formula = func(*vars_z3)
     if isinstance(z3_formula, bool):
         z3_formula = BoolVal(z3_formula)
@@ -195,7 +195,6 @@ def evaluate(individual, NUM_VARS, timeout_seconds):
         individual.fastest_runtime = non_timeout_time
         individual.flag = "TO"
         return (fitness,)
-
 
         # Fitness = relative difference between runtimes
     threshold = 0.1
@@ -419,9 +418,12 @@ def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb):
         seen = set()
         unique_offspring = []
         for ind in offspring:
-            if id(ind) not in seen:  # use the object id
-                seen.add(id(ind))
+            tree_str = str(ind)
+            if tree_str not in seen:  # use the object id
+                seen.add(tree_str)
                 unique_offspring.append(ind)
+            # else:
+            #     print("FOUND DUPLICATE")
         offspring = unique_offspring
 
         # # # Mark all cloned/offspring individuals as requiring reevaluation
@@ -504,10 +506,246 @@ def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb):
 
     print(f"Logged run to {GLOBAL_CSV}")
 
-if __name__ == "__main__":
-    main()
+def is_well_formed_deap(expr_str, pset, num_vars):
+    try:
+        tree = gp.PrimitiveTree.from_string(expr_str, pset)
+        func = gp.compile(tree, pset)
 
-#OpenAI key: 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
+        # Type-safe dummy execution
+        dummy_vars = [Int(f"x{i}") for i in range(num_vars)]
+        func(*dummy_vars)
+
+        return True
+    except Exception:
+        return False
+
+def is_well_formed_z3(expr_str, num_vars):
+    try:
+        vars_z3 = {f"x{i}": Int(f"x{i}") for i in range(num_vars)}
+
+        expr = eval(expr_str, {}, vars_z3)
+
+        if not isinstance(expr, BoolRef):
+            return False
+
+        s = Solver()
+        s.add(expr)  # type check happens here
+        return True
+    except Exception:
+        return False
+
+
+
+def test_llm_mutation():
+    # could we potentially add in the struggle solver to the prompt to help mutation/crossover?
+    NUM_VARS = 4
+    MAX_DEPTH = 5
+    RUNS = 100
+    well_formed_smtlib = 0 #100,100, 100,100, 100 (vars4,depth3)
+    error_smtlib = []
+    well_formed_z3 = 0 #96,99, 100,100,100
+    error_z3 = []
+    well_formed_deap = 0 #98,98, 97,100,100
+    error_deap = []
+
+    # Setup DEAP GP with your primitives, terminals, and variables
+    DEAP_setup(NUM_VARS, MAX_DEPTH)
+
+    for i in range(RUNS):
+        # Create a single individual
+        ind = toolbox.individual()
+        #print("Original individual (DEAP GP tree):")
+        print("\nOriginal DEAP representation:")
+        print(ind)
+
+        # Convert to Z3 representation
+        vars_z3 = [Int(f"x{i}") for i in range(NUM_VARS)]
+        func = gp.compile(expr=ind, pset=pset)
+        z3_expr = func(*vars_z3)
+        # print("\nOriginal Z3 representation:")
+        # print(z3_expr)
+
+        # Convert to SMT-LIB string
+        smtlib_str = gp_tree_to_smt(ind)
+        # print("\nOriginal SMT-LIB representation:")
+        # print(smtlib_str)
+
+        # Prompt LLM for Z3-style mutation
+        prompt_z3 = f"""
+    You are an SMT mutation operator.
+    
+    Given this Z3-style formula:
+    
+    {z3_expr}
+    
+    Produce a mutation using only variables specified in the input expression and primitives +, -, *, >, <, >=, <=, == ONLY. and,or are not defined and should NOT be used.
+    Aim to make this mutation such that it will make the expression significantly harder for an SMT solver to solve, but only mutate a single operand from the root (do not change the root operator)
+    Output ONLY the mutated formula in Z3-style format.
+    
+    Rules:
+    - Output ONLY the Z3 formula, nothing else.
+    - Do NOT include any Markdown code fences like ```smt``` or ``` or any other annotations.
+    - Keep it valid Z3-style syntax, and make sure the root operator gives a Boolean expression and the two operands to it have the same type to prevent type errors.
+    
+    """
+        # z3_mutated = call_LLM(prompt_z3)
+        # # print("\nLLM Z3-style mutation output:")
+        # # print(z3_mutated)
+        # if is_well_formed_z3(z3_mutated, NUM_VARS):
+        #     well_formed_z3 += 1
+        # else:
+        #     error_z3.append(z3_mutated)
+
+        # Prompt LLM for SMT-LIB mutation
+        prompt_smtlib = f"""
+    You are an SMT mutation operator.
+    
+    Given this SMT-LIB formula:
+    
+    {smtlib_str}
+    
+    Produce a mutation using only variables specified in the input string and primitives +, -, *, >, <, >=, <=, = (as defined in SMT-LIB).
+    Aim to make this mutation such that it will make the expression significantly harder for an SMT solver to solve, but only mutate a single operand from the root (do not change the root operator)
+    Output ONLY the mutated formula in SMT-LIB format.
+    
+    Rules:
+    - Output ONLY the SMT-LIB formula, nothing else, but make sure this includes the logic and the variable declarations before the assert (as in the formula provided).
+    - Do NOT include any Markdown code fences like ```smt``` or ``` or any other annotations.
+    - Keep it valid SMT-LIB 2.0 syntax.
+    
+    """
+        # smtlib_mutated = call_LLM(prompt_smtlib)
+        # # print("\nLLM SMT-LIB mutation output:")
+        # # print(smtlib_mutated)
+        # _, smtlib_res = measure_runtime_subprocess_stdin(smtlib_mutated,"z3",0.1)
+        # if smtlib_res != "subFailed":
+        #     well_formed_smtlib += 1
+        # else:
+        #     error_smtlib.append(smtlib_mutated)
+
+        # Prompt LLM for DEAP mutation
+        prompt_deap = f"""
+    You are an SMT mutation operator.
+    
+    Given this DEAP PrimitiveTree individual:
+    
+    {ind}
+    Here is the Primitive Set (pset) definition:
+    
+        # Arithmetic
+        pset.addPrimitive(lambda x, y: x + y, [ArithRef, ArithRef], ArithRef, name="add")
+        pset.addPrimitive(lambda x, y: x - y, [ArithRef, ArithRef], ArithRef, name="sub")
+        pset.addPrimitive(lambda x, y: x * y, [ArithRef, ArithRef], ArithRef, name="mul")
+    
+        # Comparisons
+        pset.addPrimitive(lambda x, y: x > y, [ArithRef, ArithRef], BoolRef, name="gt")
+        pset.addPrimitive(lambda x, y: x < y, [ArithRef, ArithRef], BoolRef, name="lt")
+        pset.addPrimitive(lambda x, y: x >= y, [ArithRef, ArithRef], BoolRef, name="ge")
+        pset.addPrimitive(lambda x, y: x <= y, [ArithRef, ArithRef], BoolRef, name="le")
+        pset.addPrimitive(lambda x, y: x == y, [ArithRef, ArithRef], BoolRef, name="eq")
+    
+        # Constants and terminals
+        #pset.addEphemeralConstant("rand100", lambda: IntVal(random.randint(0, 100)), ArithRef)
+        pset.addTerminal(BoolVal(True), BoolRef)
+        pset.addTerminal(BoolVal(False), BoolRef)
+        
+    Produce a mutation using primitives defined in the pset (i.e only add, sub, mul, gt, lt, ge, le or eq), you may introduce new variables in the form of ARGx where x is a number up to {NUM_VARS - 1}
+    Aim to make this mutation such that it will make the expression significantly harder for an SMT solver to solve, but only mutate a single operand from the root (do not change the root operator)
+    Output ONLY the mutated formula in DEAP format so I can parse it straight back into DEAP.
+    
+    Rules:
+    - Output ONLY the formula, nothing else. and, or, nand, etc. are NOT permitted. Use only primitives provided in the set above
+    - The root operator gives a Boolean expression and the operands of this must evaluate to the same type to prevent type errors.
+    - Do NOT include any Markdown code fences like ```smt``` or ``` or any other annotations.
+    
+    """
+        deap_mutated = call_LLM(prompt_deap)
+
+        if is_well_formed_deap(deap_mutated, pset, NUM_VARS):
+            #well_formed_deap += 1
+            print("\nLLM DEAP mutation output:")
+            print(deap_mutated)
+        else:
+            print("\nDEAP MUTATION WAS INVALID")
+            print(deap_mutated)
+            #error_deap.append(deap_mutated)
+
+    # print(f"Well-formed SMT-LIB LLM outputs: {well_formed_smtlib}/{RUNS}")
+    # print(f"Error mutations for SMT-LIB: {error_smtlib}")
+    # print(f"Well-formed DEAP LLM outputs: {well_formed_deap}/{RUNS}")
+    # print(f"Error mutations for DEAP:  {error_deap}")
+    # print(f"Well-formed z3 LLM outputs: {well_formed_z3}/{RUNS}")
+    # print(f"Error mutations for z3: {error_z3}")
+
+import re
+
+# operator → (deap_name, precedence)
+OPS = {
+    '+':  ('add', 2),
+    '-':  ('sub', 2),
+    '*':  ('mul', 3),
+    '>':  ('gt', 1),
+    '<':  ('lt', 1),
+    '>=': ('ge', 1),
+    '<=': ('le', 1),
+    '==': ('eq', 1),
+}
+
+TOKEN_REGEX = re.compile(
+    r'\s*(>=|<=|==|[()+\-*<>]|x\d+)\s*'
+)
+
+def tokenize(expr: str):
+    return TOKEN_REGEX.findall(expr)
+
+def infix_to_ast(tokens):
+    """Shunting-yard → AST"""
+    output = []
+    ops = []
+
+    def pop_op():
+        op = ops.pop()
+        rhs = output.pop()
+        lhs = output.pop()
+        output.append((op, lhs, rhs))
+
+    for tok in tokens:
+        if tok.startswith('x'):
+            output.append(tok)
+        elif tok == '(':
+            ops.append(tok)
+        elif tok == ')':
+            while ops[-1] != '(':
+                pop_op()
+            ops.pop()
+        else:  # operator
+            _, prec = OPS[tok]
+            while ops and ops[-1] != '(' and OPS[ops[-1]][1] >= prec:
+                pop_op()
+            ops.append(tok)
+
+    while ops:
+        pop_op()
+
+    return output[0]
+
+def ast_to_deap(node):
+    if isinstance(node, str):
+        return node
+    op, lhs, rhs = node
+    deap_name = OPS[op][0]
+    return f"{deap_name}({ast_to_deap(lhs)}, {ast_to_deap(rhs)})"
+
+def infix_to_deap(expr: str) -> str:
+    tokens = tokenize(expr)
+    ast = infix_to_ast(tokens)
+    return ast_to_deap(ast)
+
+
+if __name__ == "__main__":
+    #main()
+    test_llm_mutation()
+
 
 
 
