@@ -32,8 +32,7 @@ def DEAP_setup(NUM_VARS, MAX_DEPTH):
     pset.addPrimitive(lambda x, y: x <= y, [ArithRef, ArithRef], BoolRef, name="le")
     pset.addPrimitive(lambda x, y: x == y, [ArithRef, ArithRef], BoolRef, name="eq")
 
-    # Constants and terminals
-    #pset.addEphemeralConstant("rand100", lambda: IntVal(random.randint(0, 100)), ArithRef)
+    # Terminals
     pset.addTerminal(BoolVal(True), BoolRef)
     pset.addTerminal(BoolVal(False), BoolRef)
 
@@ -120,7 +119,7 @@ def evaluate(individual, NUM_VARS, timeout_seconds):
     t_cvc5, res_cvc5 = measure_runtime_subprocess_stdin(smtlib_str, "cvc5", timeout_seconds)
     t_mathsat, res_mathsat = measure_runtime_subprocess_stdin(smtlib_str, "mathsat", timeout_seconds)
 
-    print(t_z3,t_cvc5,t_mathsat)
+    #print(t_z3,t_cvc5,t_mathsat)
 
     if (res_z3 == "subFailed" or
         res_cvc5 == "subFailed" or
@@ -133,8 +132,8 @@ def evaluate(individual, NUM_VARS, timeout_seconds):
     if (res_z3 == "timeoutOE" and
         res_cvc5 == "timeoutOE" and
         res_mathsat == "timeoutOE"):
-
-        fitness = 200 # both timed out so give some reward and let it crossover
+        individual.TOS = {"z3", "cvc5", "mathsat"}
+        fitness = 200 # all timed out so give some reward and let it crossover
         individual.flag = "TO"
         return (fitness,)
 
@@ -147,7 +146,7 @@ def evaluate(individual, NUM_VARS, timeout_seconds):
     timeout_solvers = [(name, t) for (name, res, t) in timeouts if res == "timeoutOE"]
 
     if len(timeout_solvers) == 1:
-        # That solver is the time-out-of-stress (TOS)
+        # That solver is the time-out solver (TOS)
         name, time = timeout_solvers[0]
         individual.TOS = {name}
 
@@ -161,9 +160,9 @@ def evaluate(individual, NUM_VARS, timeout_seconds):
 
     if len(timeout_solvers) == 2:
         # The 1 non-timeout solver determines the “min time”
+
         non_timeout_time = next(t for (_, res, t) in timeouts if res == "intime")
         timeout_solvers_names = [name for (name, _) in timeout_solvers]
-
         individual.TOS = set(timeout_solvers_names)
 
         fitness = 1000 + (timeout_seconds / non_timeout_time)
@@ -173,7 +172,7 @@ def evaluate(individual, NUM_VARS, timeout_seconds):
         return (fitness,)
 
 
-        # Fitness = relative difference between runtimes
+    # Fitness = relative difference between runtimes
     threshold = 0.1
     if max(t_z3, t_cvc5, t_mathsat) < threshold: #essentially ignore any SMT that run quickly on both
         fitness = 0.0
@@ -192,11 +191,12 @@ def evaluate(individual, NUM_VARS, timeout_seconds):
     difference = times[slowest] - times[fastest]
 
     if difference > 0.5: #deemed to run significantly slower
-        individual.TOS = slowest
+        individual.TOS = {slowest}
+    else:
+        individual.TOS = set()
 
     fitness = difference / times[fastest]
 
-    individual.TOS = set()
     individual.flag = "OK"
     individual.fastest_runtime = times[fastest]
     return (fitness,)
@@ -225,7 +225,7 @@ def join(ind1, ind2):
 # 5. Run Evolution
 # ===========================================================
 
-GLOBAL_CSV = "all_fuzzer_results.csv"
+GLOBAL_CSV = "testtest.csv"
 
 def init_global_csv():
     if not os.path.exists(GLOBAL_CSV):
@@ -240,6 +240,7 @@ def init_global_csv():
                 "joinpb",
                 "mutpb",
                 "crosspb",
+                "timeout"
                 "fitness",
                 "formula",
                 "solver",
@@ -250,53 +251,90 @@ def init_global_csv():
 
 def main():
     init_global_csv()
-    timeout_seconds = 3
 
-    POP_SIZE_LIST   = [20, 50]
-    NGEN_LIST       = [10, 20]
-    NUM_VARS_LIST   = [4, 5]
-    MAX_DEPTH_LIST  = [5, 6]
-    JOINPB_LIST     = [0.2, 0.4]
-    MUTPB_LIST      = [0.2, 0.4]
-    CROSSPB_LIST    = [0.2, 0.4]
+    # ---- Default values ----
+    DEFAULT_POP_SIZE = 20
+    DEFAULT_GEN_SIZE = 20
+    DEFAULT_NUM_VARS = 4
+    DEFAULT_MAX_DEPTH = 5
+    DEFAULT_JOIN_PB = 0.2
+    DEFAULT_MUTATE_PB = 0.2
+    DEFAULT_CROSSOVER_PB = 0.6
+    DEFAULT_TIMEOUT_SECONDS = 3
 
-    for pop in POP_SIZE_LIST:
-        for ngen in NGEN_LIST:
-            for num_vars in NUM_VARS_LIST:
-                for max_depth in MAX_DEPTH_LIST:
-                    for joinpb in JOINPB_LIST:
-                        for mutpb in MUTPB_LIST:
-                            for crosspb in CROSSPB_LIST:
+    # ---- Two variation values for each parameter ----
+    POP_SIZE_LIST   = [10, 30]
+    NGEN_LIST       = [10, 30]
+    NUM_VARS_LIST   = [3, 5]
+    MAX_DEPTH_LIST  = [4, 6]
+    JOINPB_LIST     = [0.0, 0.4]
+    MUTPB_LIST      = [0.0, 0.4]
+    CROSSPB_LIST    = [0.0, 0.8]
+    TIMEOUT_LIST    = [1, 10]
 
-                                print("\n===================================================")
-                                print(f"Running fuzzer with parameters:")
-                                print(f"POP_SIZE   = {pop}")
-                                print(f"NGEN       = {ngen}")
-                                print(f"NUM_VARS   = {num_vars}")
-                                print(f"MAX_DEPTH  = {max_depth}")
-                                print(f"joinpb     = {joinpb}")
-                                print(f"mutpb      = {mutpb}")
-                                print(f"crosspb    = {crosspb}")
-                                print("===================================================\n")
+    # -------------------------------------------------
+    # Run the BASELINE experiment
+    # -------------------------------------------------
+    print("\n================ BASELINE EXPERIMENT ================")
+    DEAP_setup(DEFAULT_NUM_VARS, DEFAULT_MAX_DEPTH)
+    run_fuzzer(
+        POP_SIZE=DEFAULT_POP_SIZE,
+        NGEN=DEFAULT_GEN_SIZE,
+        NUM_VARS=DEFAULT_NUM_VARS,
+        MAX_DEPTH=DEFAULT_MAX_DEPTH,
+        jnpb=DEFAULT_JOIN_PB,
+        mutpb=DEFAULT_MUTATE_PB,
+        cxpb=DEFAULT_CROSSOVER_PB,
+        timeout_seconds=DEFAULT_TIMEOUT_SECONDS
+    )
 
-                                DEAP_setup(num_vars, max_depth)
-                                run_fuzzer(
-                                    POP_SIZE=pop,
-                                    NGEN=ngen,
-                                    NUM_VARS=num_vars,
-                                    MAX_DEPTH=max_depth,
-                                    jnpb=joinpb,
-                                    mutpb=mutpb,
-                                    cxpb=crosspb
-                                )
+    # -------------------------------------------------
+    # 2. Run 16 single-parameter experiments
+    # For each parameter:
+    #   - replace default with low value
+    #   - replace default with high value
+    # -------------------------------------------------
+
+    experiments = [
+        ("POP_SIZE", POP_SIZE_LIST, "POP_SIZE"),
+        ("NGEN", NGEN_LIST, "NGEN"),
+        ("NUM_VARS", NUM_VARS_LIST, "NUM_VARS"),
+        ("MAX_DEPTH", MAX_DEPTH_LIST, "MAX_DEPTH"),
+        ("JOIN_PB", JOINPB_LIST, "jnpb"),
+        ("MUTATE_PB", MUTPB_LIST, "mutpb"),
+        ("CROSSOVER_PB", CROSSPB_LIST, "cxpb"),
+        ("TIMEOUT", TIMEOUT_LIST, "timeout_seconds"),
+    ]
+
+    for param_name, param_values, arg_key in experiments:
+
+        for val in param_values:
+
+            # Start from defaults and override ONE parameter
+            args = {
+                "POP_SIZE": DEFAULT_POP_SIZE,
+                "NGEN": DEFAULT_GEN_SIZE,
+                "NUM_VARS": DEFAULT_NUM_VARS,
+                "MAX_DEPTH": DEFAULT_MAX_DEPTH,
+                "jnpb": DEFAULT_JOIN_PB,
+                "mutpb": DEFAULT_MUTATE_PB,
+                "cxpb": DEFAULT_CROSSOVER_PB,
+                "timeout_seconds": DEFAULT_TIMEOUT_SECONDS,
+            }
+
+            args[arg_key] = val  # override just one parameter
+
+            print("\n================ PARAMETER SWEEP ==================")
+            print(f"Varying {param_name}, using {val}")
+            print("Arguments:", args)
+            print("===================================================\n")
+
+            DEAP_setup(args["NUM_VARS"], args["MAX_DEPTH"])
+            run_fuzzer(**args)
 
 
+def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb, timeout_seconds):
 
-def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb):
-    timeout_seconds = 3
-
-    #NGEN = 10
-    #POP_SIZE = 20
     # Initialize population and hall of fame
     population = toolbox.population(n=POP_SIZE)
     hof = tools.HallOfFame(5)
@@ -325,14 +363,6 @@ def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb):
 
     # Begin the generational loop
     for gen in range(1, NGEN + 1):
-
-        num_TO = sum(1 for ind in population if getattr(ind, "flag", None) == "TO")
-
-        # If MORE THAN HALF timeout → increase the timeout by 1 second
-        if num_TO > len(population) / 2:
-            timeout_seconds += 1
-            print(f"More than half the population timed out at generation {gen}.")
-            print(f"Increasing timeout to {timeout_seconds} seconds.")
 
         # Store original population as parents
         parents = population
@@ -365,7 +395,6 @@ def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb):
                 unique_offspring.append(ind)
             # else:
             #     print("FOUND DUPLICATE")
-
         offspring = unique_offspring
 
         # # # Mark all cloned/offspring individuals as requiring reevaluation
@@ -387,8 +416,8 @@ def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb):
         offspring.sort(key=lambda ind: ind.fitness.values[0], reverse=True)
         population[:] = offspring[:POP_SIZE]
 
-        for ind in population:
-            print(ind.flag, ind.fitness.values)
+        #for ind in population:
+            #print(ind.flag, ind.fitness.values)
 
         # Record statistics
         record = statistics.compile(population)
@@ -398,29 +427,39 @@ def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb):
     best_ind = max(hof, key=lambda ind: ind.fitness.values[0])
     best_formula = str(best_ind)
     best_fitness = best_ind.fitness.values[0]
+    print(best_fitness)
 
     # Determine struggle solver
     tos = getattr(best_ind, "TOS", None)
 
     if isinstance(tos, set):
-        struggle_solver = list(tos)[0] if tos else "None"
-    else:
-        struggle_solver = tos
+        struggle_solver = list(tos)
 
     print(f"Struggle solver selected: {struggle_solver}")
 
     smt_query = getattr(best_ind, "smtlib_str", None)
-    # Re-run on struggle solver with 10 min timeout
-    if tos and smt_query:
-        long_timeout_runtime, _ = measure_runtime_subprocess_stdin(smt_query, struggle_solver, 600)
-        print(f"10-minute timeout runtime: {long_timeout_runtime} sec")
 
-        # Compute difference from fastest
-        fastest = getattr(best_ind, "fastest_runtime", None)
-        if fastest is not None:
-            diff = long_timeout_runtime - fastest
-        else:
-            diff = 0
+    # Re-run on struggle solver with 10 min timeout
+
+    if tos and smt_query:
+        results = []
+
+        for solver in struggle_solver:
+            long_timeout_runtime, _ = measure_runtime_subprocess_stdin(smt_query, solver, 600)
+            print(f"10-minute timeout runtime: {long_timeout_runtime} sec on {solver}")
+
+            # Compute difference from fastest
+            fastest = getattr(best_ind, "fastest_runtime", None)
+            if fastest is not None:
+                #print(fastest)
+                diff = (long_timeout_runtime - fastest) / fastest
+            else:
+                diff = 0
+
+            results.append((solver, long_timeout_runtime, diff))
+
+        struggle_solver, long_timeout_runtime, diff = max(results, key=lambda x: x[2])
+
     else:
         diff = 0
         long_timeout_runtime = 0
@@ -439,6 +478,7 @@ def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb):
             jnpb,
             mutpb,
             cxpb,
+            timeout_seconds,
             best_fitness,
             best_formula,
             struggle_solver,
@@ -451,6 +491,7 @@ def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb):
 if __name__ == "__main__":
     main()
 
+#OpenAI key: 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
 
 
 
