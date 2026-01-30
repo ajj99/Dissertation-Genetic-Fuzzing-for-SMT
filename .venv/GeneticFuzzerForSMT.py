@@ -8,16 +8,24 @@ from io import StringIO
 import operator
 import os
 import csv
+import numpy as np
 
 # ===========================================================
 # 1. GP + Z3 Primitive Setup
 # ===========================================================
 
+# Generate a random seed (1–10,000 is more than enough for 5–10 runs)
+SEED = random.randint(1, 10_000)
+
+# Seed all randomness
+random.seed(SEED)
+np.random.seed(SEED)
+
 creator.create("RunTimeFitness", base.Fitness, weights=(1.0,))
 creator.create("IndividualSMT", gp.PrimitiveTree, fitness=creator.RunTimeFitness)
 
 def DEAP_setup(NUM_VARS, MAX_DEPTH):
-    global toolbox, pset
+    global toolbox, pset, pset_join
     pset = gp.PrimitiveSetTyped("MAIN", [ArithRef]*NUM_VARS, BoolRef)
 
     # Arithmetic
@@ -32,9 +40,25 @@ def DEAP_setup(NUM_VARS, MAX_DEPTH):
     pset.addPrimitive(lambda x, y: x <= y, [ArithRef, ArithRef], BoolRef, name="le")
     pset.addPrimitive(lambda x, y: x == y, [ArithRef, ArithRef], BoolRef, name="eq")
 
-    # Terminals
+    # # Terminals
     pset.addTerminal(BoolVal(True), BoolRef)
     pset.addTerminal(BoolVal(False), BoolRef)
+
+    pset_join = copy.deepcopy(pset)
+
+    def z3_and(x, y):
+        if isinstance(x, bool):
+            x = BoolVal(x)
+        if isinstance(y, bool):
+            y = BoolVal(y)
+        return And(x, y)
+
+    pset_join.addPrimitive(
+        z3_and,
+        [BoolRef, BoolRef],
+        BoolRef,
+        name="and_"
+    )
 
     # ===========================================================
     # 2. DEAP individual and population setup
@@ -76,22 +100,22 @@ def measure_runtime_subprocess_stdin(smtlib_str, solver_cmd, timeout_seconds):
         if proc.returncode == 0:
             if "sat" in output or "unsat" in output:
                 result = "intime"
-                return end - start, result
+                return end - start, result, output
             else: #"unknown", probably rare that branch is hit
                 result = "timeoutOE"
-                return timeout_seconds, result
+                return timeout_seconds, result, output
         else:
             result = "subFailed"
-            return -1, result
+            return -1, result, output
 
     except subprocess.TimeoutExpired:
-        return timeout_seconds, "timeoutOE"
+        return timeout_seconds, "timeoutOE", "unknown"
 
 
 def evaluate(individual, NUM_VARS, timeout_seconds):
     # Compile DEAP expression
     #print(individual)
-    func = gp.compile(expr=individual, pset=pset)
+    func = gp.compile(expr=individual, pset=pset_join)
 
     # Create Z3 variables
     vars_z3 = [Int(f"x{i}") for i in range(NUM_VARS)]
@@ -115,11 +139,17 @@ def evaluate(individual, NUM_VARS, timeout_seconds):
     #print(smtlib_str)
     individual.smtlib_str = smtlib_str
 
-    t_z3, res_z3 = measure_runtime_subprocess_stdin(smtlib_str, "z3", timeout_seconds)
-    t_cvc5, res_cvc5 = measure_runtime_subprocess_stdin(smtlib_str, "cvc5", timeout_seconds)
-    t_mathsat, res_mathsat = measure_runtime_subprocess_stdin(smtlib_str, "mathsat", timeout_seconds)
+    t_z3, res_z3, status_z3 = measure_runtime_subprocess_stdin(smtlib_str, "z3", timeout_seconds)
+    t_cvc5, res_cvc5, status_cvc5 = measure_runtime_subprocess_stdin(smtlib_str, "cvc5", timeout_seconds)
+    t_mathsat, res_mathsat, status_mathsat = measure_runtime_subprocess_stdin(smtlib_str, "mathsat", timeout_seconds)
 
     #print(t_z3,t_cvc5,t_mathsat)
+
+    if status_z3 == status_cvc5 and status_cvc5 == status_mathsat:
+        individual.status = status_z3
+    else:
+        exit #somehow the result is different for each SMT
+
 
     if (res_z3 == "subFailed" or
         res_cvc5 == "subFailed" or
@@ -217,15 +247,19 @@ def cxOnePointWithTOS(ind1, ind2):
 
 
 def join(ind1, ind2):
-    new_tree = ind1 + ind2
-    new_ind = creator.IndividualSMT(new_tree)
-    return new_ind
+    new_ind = gp.PrimitiveTree.from_string(
+        f"and_({ind1}, {ind2})", pset_join)
+    # print("Ind1:", ind1)
+    # print("Ind2: ", ind2)
+    # print("Joined: ", new_ind)
+    return creator.IndividualSMT(new_ind)
 
 # ===========================================================
 # 5. Run Evolution
 # ===========================================================
 
-GLOBAL_CSV = "testtest.csv"
+
+GLOBAL_CSV = "Tests_Join.csv"
 
 def init_global_csv():
     if not os.path.exists(GLOBAL_CSV):
@@ -240,16 +274,18 @@ def init_global_csv():
                 "joinpb",
                 "mutpb",
                 "crosspb",
-                "timeout"
+                "timeout",
                 "fitness",
                 "formula",
                 "solver",
                 "runtime",
-                "diff_from_fastest"
+                "diff_from_fastest",
+                "output"
             ])
 
 
 def main():
+
     init_global_csv()
 
     # ---- Default values ----
@@ -263,14 +299,14 @@ def main():
     DEFAULT_TIMEOUT_SECONDS = 3
 
     # ---- Two variation values for each parameter ----
-    POP_SIZE_LIST   = [10, 30]
-    NGEN_LIST       = [10, 30]
+    POP_SIZE_LIST   = [10, 30] #fill in between continuous 15, 25
+    NGEN_LIST       = [10, 30] #15, 25
     NUM_VARS_LIST   = [3, 5]
     MAX_DEPTH_LIST  = [4, 6]
-    JOINPB_LIST     = [0.0, 0.4]
-    MUTPB_LIST      = [0.0, 0.4]
-    CROSSPB_LIST    = [0.0, 0.8]
-    TIMEOUT_LIST    = [1, 10]
+    JOINPB_LIST     = [0.0, 0.4] #potentially 0.1, 0.3
+    MUTPB_LIST      = [0.0, 0.4] # ''
+    CROSSPB_LIST    = [0.0, 0.8] # 0.2, 0.4
+    TIMEOUT_LIST    = [1, 10] # 5,
 
     # -------------------------------------------------
     # Run the BASELINE experiment
@@ -331,6 +367,13 @@ def main():
 
             DEAP_setup(args["NUM_VARS"], args["MAX_DEPTH"])
             run_fuzzer(**args)
+
+    with open(GLOBAL_CSV, "a", encoding="utf-8") as f:
+        f.write(f"\nSeed: {SEED}\n")
+
+    with open(GLOBAL_CSV, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([])
 
 
 def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb, timeout_seconds):
@@ -435,7 +478,7 @@ def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb, timeout_s
     if isinstance(tos, set):
         struggle_solver = list(tos)
 
-    print(f"Struggle solver selected: {struggle_solver}")
+        print(f"Struggle solver selected: {struggle_solver}")
 
     smt_query = getattr(best_ind, "smtlib_str", None)
 
@@ -445,7 +488,7 @@ def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb, timeout_s
         results = []
 
         for solver in struggle_solver:
-            long_timeout_runtime, _ = measure_runtime_subprocess_stdin(smt_query, solver, 600)
+            long_timeout_runtime, _, best_ind.status = measure_runtime_subprocess_stdin(smt_query, solver, 600)
             print(f"10-minute timeout runtime: {long_timeout_runtime} sec on {solver}")
 
             # Compute difference from fastest
@@ -461,8 +504,11 @@ def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb, timeout_s
         struggle_solver, long_timeout_runtime, diff = max(results, key=lambda x: x[2])
 
     else:
+        struggle_solver = None
         diff = 0
         long_timeout_runtime = 0
+
+    status = getattr(best_ind, "status", None)
 
     # Append one row to global CSV
     timestamp = datetime.datetime.now().isoformat()
@@ -475,7 +521,7 @@ def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb, timeout_s
             NGEN,
             NUM_VARS,
             MAX_DEPTH,
-            jnpb,
+            #jnpb,
             mutpb,
             cxpb,
             timeout_seconds,
@@ -483,15 +529,16 @@ def run_fuzzer(POP_SIZE, NGEN, NUM_VARS, MAX_DEPTH, jnpb, mutpb, cxpb, timeout_s
             best_formula,
             struggle_solver,
             long_timeout_runtime,
-            diff
+            diff,
+            status
         ])
+
 
     print(f"Logged run to {GLOBAL_CSV}")
 
 if __name__ == "__main__":
     main()
 
-#OpenAI key: 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
 
 
 
